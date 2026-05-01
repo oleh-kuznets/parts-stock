@@ -219,9 +219,13 @@ Win32Window::MessageHandler(HWND hwnd,
 
     case WM_GETMINMAXINFO: {
       auto info = reinterpret_cast<MINMAXINFO*>(lparam);
-      // Sidebar (240) + minimum content area (~720) + chrome.
-      info->ptMinTrackSize.x = 1024;
-      info->ptMinTrackSize.y = 640;
+      // Sidebar (240) + minimum content area (~720) + chrome. WM_GETMINMAXINFO
+      // expects physical pixels, so scale the logical Flutter minimum by the
+      // current monitor DPI; otherwise 125-150% displays can shrink the canvas
+      // below the layout's practical minimum.
+      const double scale_factor = GetDpiForWindow(hwnd) / 96.0;
+      info->ptMinTrackSize.x = Scale(1024, scale_factor);
+      info->ptMinTrackSize.y = Scale(640, scale_factor);
       return 0;
     }
   }

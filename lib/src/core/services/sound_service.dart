@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 
 /// Bundled UI sounds under `assets/sounds/` (shared with WiseWater Connect).
 ///
@@ -31,13 +33,13 @@ class SoundService {
   /// Per-cue overrides, also matching the source mix.
   static const double _resizeEndHeaderVolume = _cueVolume * 0.72;
 
-  final AudioPlayer _saved = AudioPlayer();
-  final AudioPlayer _drop = AudioPlayer();
-  final AudioPlayer _resizeEnd = AudioPlayer();
-  final AudioPlayer _successInfo = AudioPlayer();
-  final AudioPlayer _warnAlert = AudioPlayer();
-  final AudioPlayer _dangerAlert = AudioPlayer();
-  final AudioPlayer _tourCompletion = AudioPlayer();
+  AudioPlayer? _saved;
+  AudioPlayer? _drop;
+  AudioPlayer? _resizeEnd;
+  AudioPlayer? _successInfo;
+  AudioPlayer? _warnAlert;
+  AudioPlayer? _dangerAlert;
+  AudioPlayer? _tourCompletion;
 
   bool _enabled = true;
   Future<void>? _initFuture;
@@ -62,6 +64,7 @@ class SoundService {
   Future<void> init() => _initFuture ??= _preloadAll();
 
   Future<void> _preloadAll() async {
+    if (!_platformAudioAvailable) return;
     try {
       await AudioCache.instance.loadAll(<String>[
         _savedPath,
@@ -77,17 +80,17 @@ class SoundService {
     }
     try {
       try {
-        await _successInfo.setPlayerMode(PlayerMode.lowLatency);
+        await _successInfoPlayer.setPlayerMode(PlayerMode.lowLatency);
       } catch (_) {
         // lowLatency is unsupported on some embedders; mediaPlayer is fine.
       }
-      await _prepare(_saved, _savedPath);
-      await _prepare(_drop, _dropPath);
-      await _prepare(_resizeEnd, _resizeEndPath);
-      await _prepare(_successInfo, _successInfoAlertPath);
-      await _prepare(_warnAlert, _warnAlertPath);
-      await _prepare(_dangerAlert, _dangerAlertPath);
-      await _prepare(_tourCompletion, _tourCompletionPath);
+      await _prepare(_savedPlayer, _savedPath);
+      await _prepare(_dropPlayer, _dropPath);
+      await _prepare(_resizeEndPlayer, _resizeEndPath);
+      await _prepare(_successInfoPlayer, _successInfoAlertPath);
+      await _prepare(_warnAlertPlayer, _warnAlertPath);
+      await _prepare(_dangerAlertPlayer, _dangerAlertPath);
+      await _prepare(_tourCompletionPlayer, _tourCompletionPath);
     } catch (_) {
       // Headless / missing codec — playback will silently no-op.
     }
@@ -112,50 +115,62 @@ class SoundService {
   void tap() {}
 
   /// Persisted state changed — config saved, mapping applied, etc.
-  void saved() => unawaited(_play(_saved, _savedPath));
+  void saved() {
+    if (!_canPlay) return;
+    unawaited(_play(_savedPlayer, _savedPath));
+  }
 
   /// File added to the conversion queue.
   void drop() {
-    if (!_enabled || _dropBusy) return;
+    if (!_canPlay || _dropBusy) return;
     final DateTime now = DateTime.now();
     if (now.difference(_lastDropAt) < _minDropInterval) return;
     _lastDropAt = now;
     _dropBusy = true;
     unawaited(
-      _play(_drop, _dropPath).whenComplete(() {
+      _play(_dropPlayer, _dropPath).whenComplete(() {
         _dropBusy = false;
       }),
     );
   }
 
   /// Soft "release" cue used when dismissing dialogs / clearing the queue.
-  void resizeEnd({bool headerBack = false}) => unawaited(
-    _play(
-      _resizeEnd,
-      _resizeEndPath,
-      volume: headerBack ? _resizeEndHeaderVolume : _cueVolume,
-    ),
-  );
+  void resizeEnd({bool headerBack = false}) {
+    if (!_canPlay) return;
+    unawaited(
+      _play(
+        _resizeEndPlayer,
+        _resizeEndPath,
+        volume: headerBack ? _resizeEndHeaderVolume : _cueVolume,
+      ),
+    );
+  }
 
   /// Toast: success or info.
-  void notificationSuccessInfoAlert() => _enqueueAlert(
-    () => _play(_successInfo, _successInfoAlertPath),
-  );
+  void notificationSuccessInfoAlert() {
+    if (!_canPlay) return;
+    _enqueueAlert(() => _play(_successInfoPlayer, _successInfoAlertPath));
+  }
 
   /// Toast: warn.
-  void notificationWarnAlert() => _enqueueAlert(
-    () => _play(_warnAlert, _warnAlertPath),
-  );
+  void notificationWarnAlert() {
+    if (!_canPlay) return;
+    _enqueueAlert(() => _play(_warnAlertPlayer, _warnAlertPath));
+  }
 
   /// Toast: danger / error.
-  void notificationDangerAlert() => _enqueueAlert(
-    () => _play(_dangerAlert, _dangerAlertPath),
-  );
+  void notificationDangerAlert() {
+    if (!_canPlay) return;
+    _enqueueAlert(() => _play(_dangerAlertPlayer, _dangerAlertPath));
+  }
 
   /// Conversion run finished without errors.
-  void tourCompletion() => unawaited(
-    _play(_tourCompletion, _tourCompletionPath, stopFirst: true),
-  );
+  void tourCompletion() {
+    if (!_canPlay) return;
+    unawaited(
+      _play(_tourCompletionPlayer, _tourCompletionPath, stopFirst: true),
+    );
+  }
 
   void _enqueueAlert(Future<void> Function() play) {
     _alertChain = _alertChain.then((_) => play()).catchError((Object? _) {});
@@ -167,7 +182,7 @@ class SoundService {
     bool stopFirst = false,
     double volume = _cueVolume,
   }) async {
-    if (!_enabled) return;
+    if (!_canPlay) return;
     try {
       await (_initFuture ?? Future<void>.value());
       await player.setVolume(volume);
@@ -184,4 +199,20 @@ class SoundService {
       } catch (_) {}
     }
   }
+
+  bool get _canPlay => _enabled && _platformAudioAvailable;
+
+  /// `audioplayers_windows` 4.3.0 sends event-channel messages off the Flutter
+  /// platform thread with Flutter 3.41, which can freeze the Windows runner.
+  /// Keep desktop startup stable by not creating Windows players at all.
+  bool get _platformAudioAvailable =>
+      defaultTargetPlatform != TargetPlatform.windows;
+
+  AudioPlayer get _savedPlayer => _saved ??= AudioPlayer();
+  AudioPlayer get _dropPlayer => _drop ??= AudioPlayer();
+  AudioPlayer get _resizeEndPlayer => _resizeEnd ??= AudioPlayer();
+  AudioPlayer get _successInfoPlayer => _successInfo ??= AudioPlayer();
+  AudioPlayer get _warnAlertPlayer => _warnAlert ??= AudioPlayer();
+  AudioPlayer get _dangerAlertPlayer => _dangerAlert ??= AudioPlayer();
+  AudioPlayer get _tourCompletionPlayer => _tourCompletion ??= AudioPlayer();
 }

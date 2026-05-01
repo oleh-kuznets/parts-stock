@@ -61,7 +61,8 @@ class _PartsStockAppState extends State<PartsStockApp>
     final bool? confirmed = await showAppConfirm(
       ctx,
       title: 'Закрити під час конвертації?',
-      message: 'Зараз йде конвертація. Якщо вийдеш — у теці лишаться '
+      message:
+          'Зараз йде конвертація. Якщо вийдеш — у теці лишаться '
           'недописані файли.',
       confirmLabel: 'Закрити все одно',
       cancelLabel: 'Не закривати',
@@ -278,38 +279,14 @@ class _AppShellState extends State<AppShell> {
 
 enum _SidebarMode { full, icons }
 
-/// Eager, shader-prewarming tab stack for the four feature pages.
+/// Keep-alive tab host for the four feature pages.
 ///
-/// Two problems we're fighting at once:
+/// The old Stack/Offstage version kept tab state, but it also laid out every
+/// hidden page during Windows resize. This PageView keeps visited tabs alive
+/// without making resize pay for inactive pages.
 ///
-///  1. **Tab switches re-doing work.** `KeyedSubtree(key: ValueKey(index))`
-///     tears the previous page down on every flip — disposing the page's
-///     `TextEditingController`s, cancelling its listeners (including the
-///     conversion stream subscription!), and resetting scroll. On Windows
-///     each round-trip feels like a freeze.
-///
-///  2. **First-paint shader compilation hitch.** Our hero panels use a
-///     `BoxShadow` with `blurRadius: 38`, the convert page's progress
-///     ring uses a `SweepGradient`, and the CSV preview uses a
-///     `ShaderMask`. On Windows DirectX (and ANGLE) the shader for each
-///     of those is compiled the first time it's actually painted — and
-///     that compilation runs on the UI thread. So the first time the
-///     user clicks a tab they've never visited, the click looks like the
-///     app stopped responding for 100–500 ms.
-///
-/// Fix:
-///  * Mount all four pages once and keep them alive for the rest of the
-///    session.
-///  * On the **very first frame**, paint every page (the active one on
-///    top, the others stacked under it). The user only ever sees the
-///    active page, but Skia/Impeller now has reason to actually rasterize
-///    every page once — which compiles all the shaders during launch.
-///  * On every frame after that, hidden pages are Offstage'd so we don't
-///    burn paint cycles on them.
-///
-/// State (controllers, listeners, `_runStates`, scroll position, …) is
-/// preserved across tab flips because each child sits behind a stable
-/// `ValueKey<int>(i)` regardless of stack mode.
+/// State (controllers, listeners, `_runStates`, scroll position, ...) is
+/// preserved across tab flips by [_KeepAliveTabPage].
 class _AliveTabStack extends StatefulWidget {
   const _AliveTabStack({
     required this.index,
@@ -326,49 +303,62 @@ class _AliveTabStack extends StatefulWidget {
 }
 
 class _AliveTabStackState extends State<_AliveTabStack> {
-  /// `false` for exactly one frame after mount, then flips to `true`. The
-  /// "false" frame is what gives the GPU a reason to compile every page's
-  /// shaders before the user ever interacts with the sidebar.
-  bool _shadersPrewarmed = false;
+  late final PageController _controller;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((Duration _) {
-      if (!mounted) return;
-      setState(() => _shadersPrewarmed = true);
-    });
+    _controller = PageController(initialPage: widget.index);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AliveTabStack oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.index == widget.index) return;
+    if (!_controller.hasClients) return;
+    _controller.jumpToPage(widget.index);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // Render order: every non-active page first, then the active page on
-    // top. With keyed children the framework still matches state across
-    // re-orderings, so this stays safe when `widget.index` changes.
-    final List<Widget> stacked = <Widget>[];
-    for (int i = 0; i < widget.childCount; i++) {
-      if (i == widget.index) continue;
-      stacked.add(_wrap(i, active: false));
-    }
-    stacked.add(_wrap(widget.index, active: true));
-
-    return Stack(fit: StackFit.expand, children: stacked);
-  }
-
-  Widget _wrap(int i, {required bool active}) {
-    final bool offstage = !active && _shadersPrewarmed;
-    return Positioned.fill(
-      key: ValueKey<int>(i),
-      child: Offstage(
-        offstage: offstage,
-        // Hidden pages stop ticking their animations but keep their
-        // state. The active page ticks normally.
-        child: TickerMode(
-          enabled: active,
+    return PageView.builder(
+      controller: _controller,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: widget.childCount,
+      itemBuilder: (BuildContext context, int i) {
+        return _KeepAliveTabPage(
+          key: ValueKey<int>(i),
           child: RepaintBoundary(child: widget.builder(context, i)),
-        ),
-      ),
+        );
+      },
     );
+  }
+}
+
+class _KeepAliveTabPage extends StatefulWidget {
+  const _KeepAliveTabPage({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<_KeepAliveTabPage> createState() => _KeepAliveTabPageState();
+}
+
+class _KeepAliveTabPageState extends State<_KeepAliveTabPage>
+    with AutomaticKeepAliveClientMixin<_KeepAliveTabPage> {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }
 
@@ -414,8 +404,9 @@ class _Sidebar extends StatelessWidget {
     final bool full = mode == _SidebarMode.full;
     final double width = full ? 232 : 72;
     final double itemH = full ? _itemHeightFull : _itemHeightCompact;
-    final double horizontalPad =
-        full ? _itemHorizontalPadFull : _itemHorizontalPadCompact;
+    final double horizontalPad = full
+        ? _itemHorizontalPadFull
+        : _itemHorizontalPadCompact;
     final double listHeight = destinations.length * itemH;
 
     return AnimatedContainer(
