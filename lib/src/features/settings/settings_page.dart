@@ -9,12 +9,13 @@ import '../../app/app_state.dart';
 import '../../app/theme/app_text_styles.dart';
 import '../../app/theme/app_theme_preset.dart';
 import '../../core/models/converter_config.dart';
-import '../../core/services/csv_converter.dart';
+import '../../core/services/file_reveal.dart';
 import '../../shared/widgets/app_button.dart';
 import '../../shared/widgets/app_dialogs.dart';
 import '../../shared/widgets/app_form_rows.dart';
 import '../../shared/widgets/app_text_field.dart';
 import '../../shared/widgets/app_toast.dart';
+import '../../shared/widgets/hero_panel.dart';
 import '../../shared/widgets/page_scaffold.dart';
 import '../../shared/widgets/section_card.dart';
 
@@ -67,7 +68,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _pickOutputDir() async {
     final String? selected = await getDirectoryPath(
-      confirmButtonText: 'Вибрати',
+      confirmButtonText: 'Обрати',
     );
     if (selected == null) return;
     widget.appState.setOutputDirectoryOverride(selected);
@@ -88,7 +89,7 @@ class _SettingsPageState extends State<SettingsPage> {
     if (!mounted) return;
     AppToast.show(
       context,
-      'Експортовано: ${location.path}',
+      'Зберіг у ${location.path}',
       tone: AppToastTone.success,
     );
   }
@@ -107,12 +108,12 @@ class _SettingsPageState extends State<SettingsPage> {
       final ConverterConfig next = ConverterConfig.fromJsonString(raw);
       await widget.appState.applySidecar(next);
       if (!mounted) return;
-      AppToast.show(context, 'Конфіг імпортовано', tone: AppToastTone.success);
+      AppToast.show(context, 'Підвантажив конфіг', tone: AppToastTone.success);
     } on Object catch (error) {
       if (!mounted) return;
       AppToast.show(
         context,
-        'Не вдалося прочитати конфіг: $error',
+        'Не зміг прочитати конфіг: $error',
         tone: AppToastTone.danger,
       );
     }
@@ -121,127 +122,158 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _resetDefaults() async {
     final bool? ok = await showAppConfirm(
       context,
-      title: 'Скинути до стандартних?',
+      title: 'Скинути все?',
       message:
-          'Усі ваші мапінги, націнки та налаштування буде замінено на стандартні значення.',
+          'Твої колонки, націнки та налаштування заміняться на стандартні. '
+          'Назад уже не повернути.',
       confirmLabel: 'Скинути',
       destructive: true,
     );
     if (ok != true) return;
     await widget.appState.resetToDefaults();
     if (!mounted) return;
-    AppToast.show(context, 'Конфіг скинуто', tone: AppToastTone.success);
+    AppToast.show(context, 'Скинуто', tone: AppToastTone.success);
   }
 
   @override
   Widget build(BuildContext context) {
     final ConverterConfig config = widget.appState.config;
     return PageScaffold(
-      title: 'Налаштування',
-      subtitle:
-          'Розмір частини, тема, тека за замовчуванням і робота з файлом config.txt.',
       children: <Widget>[
-        SectionCard(
-          title: 'Чанк-сайз (макс. розмір частини)',
+        FeatureHero(
+          compact: true,
+          icon: CupertinoIcons.gear_alt,
+          eyebrow: 'Налаштування',
+          title: 'Налаштуй під себе',
           subtitle:
-              'Якщо вихідний CSV перевищує цей ліміт — буде створено `_part1`, `_part2`, …',
-          leading: const SectionLeadingIcon(icon: CupertinoIcons.cube_box),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: <Widget>[
-              SizedBox(
-                width: 240,
-                child: AppTextField(
-                  label: 'Макс. розмір частини, МБ',
-                  controller: _chunkController,
-                  keyboardType: TextInputType.number,
-                  suffix: Text(
-                    'МБ',
-                    style: context.appText.bodyMedium.copyWith(
-                      color: context.preset.textMuted,
-                    ),
-                  ),
-                  onSubmitted: (String value) {
-                    final int parsed =
-                        int.tryParse(value) ?? config.maxFileSizeMb;
-                    widget.appState.updateChunkSizeMb(parsed);
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: AppButton.primary(
-                  icon: CupertinoIcons.checkmark_alt,
-                  label: 'Застосувати',
-                  onPressed: () {
-                    final int parsed = int.tryParse(_chunkController.text) ??
-                        config.maxFileSizeMb;
-                    widget.appState.updateChunkSizeMb(parsed);
-                  },
-                ),
-              ),
-            ],
+              'Розмір файлів, тема, тека для виходу і звуки. Все зберігається '
+              'одразу — кнопки «Зберегти» немає.',
+          stats: <Widget>[
+            HeroStatChip(
+              label: 'Розмір',
+              value: '${config.maxFileSizeMb} МБ',
+              icon: CupertinoIcons.cube_box,
+            ),
+            HeroStatChip(
+              label: 'Тема',
+              value: switch (widget.appState.themeMode) {
+                AppThemeMode.system => 'Авто',
+                AppThemeMode.light => 'Світла',
+                AppThemeMode.dark => 'Темна',
+              },
+              icon: CupertinoIcons.moon_stars,
+            ),
+            HeroStatChip(
+              label: 'Звуки',
+              value: widget.appState.uiSoundsEnabled ? 'увімк.' : 'вимк.',
+              icon: widget.appState.uiSoundsEnabled
+                  ? CupertinoIcons.speaker_2
+                  : CupertinoIcons.speaker_slash,
+              tone: widget.appState.uiSoundsEnabled
+                  ? HeroChipTone.positive
+                  : HeroChipTone.neutral,
+            ),
+            HeroStatChip(
+              label: 'Тека',
+              value: widget.appState.outputDirectoryOverride == null
+                  ? 'дефолт'
+                  : 'своя',
+              icon: CupertinoIcons.folder,
+              tone: widget.appState.outputDirectoryOverride == null
+                  ? HeroChipTone.neutral
+                  : HeroChipTone.positive,
+            ),
+          ],
+          primary: HeroActionButton(
+            compact: true,
+            label: 'Зберегти у файл',
+            icon: CupertinoIcons.arrow_up_doc,
+            onPressed: _exportConfig,
+          ),
+          secondary: HeroGhostButton(
+            compact: true,
+            label: 'Підвантажити…',
+            icon: CupertinoIcons.arrow_down_doc,
+            onPressed: _importConfig,
           ),
         ),
         SectionCard(
-          title: 'Іменування вихідних файлів',
+          compact: true,
+          title: 'Максимальний розмір файлу',
           subtitle:
-              'Суфікс додається до базової назви вхідного CSV. Приклад: `land_rover{суфікс}_part1.csv`.',
-          leading: const SectionLeadingIcon(icon: CupertinoIcons.tag_circle),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: <Widget>[
-              Expanded(
-                child: AppTextField(
-                  label: 'Суфікс',
-                  placeholder: '_pricelist',
-                  controller: _suffixController,
-                  onSubmitted: (String value) =>
-                      widget.appState.updateOutputBaseSuffix(value),
+              'Якщо готовий файл більший за ліміт — поб’ємо на `_part1`, `_part2`, …',
+          leading: const SectionLeadingIcon(
+            icon: CupertinoIcons.cube_box,
+            compact: true,
+          ),
+          child: SizedBox(
+            width: 220,
+            child: AppTextField(
+              label: 'Скільки МБ максимум',
+              controller: _chunkController,
+              keyboardType: TextInputType.number,
+              suffix: Text(
+                'МБ',
+                style: context.appText.bodyMedium.copyWith(
+                  color: context.preset.textMuted,
                 ),
               ),
-              const SizedBox(width: 12),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: AppButton.primary(
-                  icon: CupertinoIcons.checkmark_alt,
-                  label: 'Застосувати',
-                  onPressed: () => widget.appState.updateOutputBaseSuffix(
-                    _suffixController.text,
-                  ),
-                ),
-              ),
-            ],
+              onChanged: (String value) {
+                final int? parsed = int.tryParse(value.trim());
+                if (parsed != null && parsed > 0) {
+                  widget.appState.updateChunkSizeMb(parsed);
+                }
+              },
+            ),
           ),
         ),
         SectionCard(
-          title: 'Тека для виходу',
+          compact: true,
+          title: 'Назва готових файлів',
           subtitle:
-              'За замовчуванням — папка «output» поряд з екзешніком апки. Можна перевизначити.',
-          leading: const SectionLeadingIcon(icon: CupertinoIcons.folder),
+              'Цей текст приклеїться до назви вхідного. Приклад: `land_rover{суфікс}_part1.csv`.',
+          leading: const SectionLeadingIcon(
+            icon: CupertinoIcons.tag_circle,
+            compact: true,
+          ),
+          child: AppTextField(
+            label: 'Що дописати',
+            placeholder: '_pricelist',
+            controller: _suffixController,
+            onChanged: widget.appState.updateOutputBaseSuffix,
+          ),
+        ),
+        SectionCard(
+          compact: true,
+          title: 'Куди зберігати',
+          subtitle:
+              'За замовчуванням — папка «output» поряд із програмою. Можна обрати свою.',
+          leading: const SectionLeadingIcon(
+            icon: CupertinoIcons.folder,
+            compact: true,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               _OutputPathInfo(
-                effectivePath: widget.appState.outputDirectoryOverride ??
-                    defaultExecutableOutputPath(),
+                effectivePath: widget.appState.effectiveOutputPath,
                 isOverride: widget.appState.outputDirectoryOverride != null,
               ),
-              const SizedBox(height: 14),
-              Row(
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
                 children: <Widget>[
                   AppButton.secondary(
                     icon: CupertinoIcons.folder_open,
-                    label: 'Вибрати теку…',
+                    label: 'Обрати теку…',
                     onPressed: _pickOutputDir,
                     compact: true,
                   ),
-                  const SizedBox(width: 10),
                   if (widget.appState.outputDirectoryOverride != null)
-                    AppButton.plain(
+                    AppButton.link(
                       icon: CupertinoIcons.xmark_circle,
-                      label: 'Скинути до дефолту',
+                      label: 'Повернути за замовчуванням',
                       onPressed: () =>
                           widget.appState.setOutputDirectoryOverride(null),
                       compact: true,
@@ -252,70 +284,71 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         SectionCard(
+          compact: true,
           title: 'Тема',
-          leading: const SectionLeadingIcon(icon: CupertinoIcons.moon_stars),
+          leading: const SectionLeadingIcon(
+            icon: CupertinoIcons.moon_stars,
+            compact: true,
+          ),
           child: AppSegmented<AppThemeMode>(
             value: widget.appState.themeMode,
             onChanged: widget.appState.setThemeMode,
             children: const <AppThemeMode, Widget>{
               AppThemeMode.system: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                 child: Text('Системна'),
               ),
               AppThemeMode.light: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                 child: Text('Світла'),
               ),
               AppThemeMode.dark: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                 child: Text('Темна'),
               ),
             },
           ),
         ),
         SectionCard(
-          title: 'Звуки інтерфейсу',
+          compact: true,
+          title: 'Звуки',
           subtitle:
-              'Тихі сигнали для тапів, тостів і завершення конвертації. '
-              'Той самий набір звуків, що в WiseWater Connect.',
-          leading: const SectionLeadingIcon(icon: CupertinoIcons.speaker_2),
+              'Тихі сигнали на кліки, повідомлення та завершення.',
+          leading: const SectionLeadingIcon(
+            icon: CupertinoIcons.speaker_2,
+            compact: true,
+          ),
           child: AppSwitchRow(
-            title: 'Грати UI-звуки',
-            subtitle: 'Вимкніть, якщо хочете тиху роботу.',
+            title: 'Звуки інтерфейсу',
+            subtitle: 'Вимкни, якщо хочеш тиху роботу.',
             value: widget.appState.uiSoundsEnabled,
             onChanged: widget.appState.setUiSoundsEnabled,
           ),
         ),
         SectionCard(
-          title: 'Файл config.txt',
+          compact: true,
+          title: 'Активний конфіг',
           subtitle:
-              'Експортуйте конфіг і покладіть `config.txt` поряд із CSV — апка автоматично запропонує його застосувати.',
-          leading: const SectionLeadingIcon(icon: CupertinoIcons.doc_text),
+              'Тут лежить файл `config.json`. Можна скинути все до стандартного '
+              'стану.',
+          leading: const SectionLeadingIcon(
+            icon: CupertinoIcons.doc_text,
+            compact: true,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              if (_storagePath != null) _StoragePathRow(storagePath: _storagePath!),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: <Widget>[
-                  AppButton.primary(
-                    icon: CupertinoIcons.arrow_up_doc,
-                    label: 'Експорт у файл…',
-                    onPressed: _exportConfig,
-                  ),
-                  AppButton.secondary(
-                    icon: CupertinoIcons.arrow_down_doc,
-                    label: 'Імпорт з файлу…',
-                    onPressed: _importConfig,
-                  ),
-                  AppButton.plain(
-                    icon: CupertinoIcons.refresh,
-                    label: 'Скинути до стандартних',
-                    onPressed: _resetDefaults,
-                  ),
-                ],
+              if (_storagePath != null)
+                _StoragePathRow(storagePath: _storagePath!),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: AppButton.danger(
+                  compact: true,
+                  icon: CupertinoIcons.refresh,
+                  label: 'Скинути все',
+                  onPressed: _resetDefaults,
+                ),
               ),
             ],
           ),
@@ -338,53 +371,55 @@ class _OutputPathInfo extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppThemePreset preset = context.preset;
     final AppTextStyles t = context.appText;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: preset.surfaceMuted.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: preset.borderSoft),
-      ),
-      child: Row(
-        children: <Widget>[
-          Icon(
-            isOverride
-                ? CupertinoIcons.folder_fill_badge_person_crop
-                : CupertinoIcons.folder_fill,
-            size: 18,
-            color: preset.textSecondary,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  isOverride ? 'Перевизначено' : 'За замовчуванням',
-                  style: t.labelMedium.copyWith(color: preset.textSecondary),
+    return Row(
+      children: <Widget>[
+        Icon(
+          isOverride
+              ? CupertinoIcons.folder_fill_badge_person_crop
+              : CupertinoIcons.folder_fill,
+          size: 18,
+          color: preset.textSecondary,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                isOverride ? 'Своя тека' : 'За замовчуванням',
+                style: t.labelSmall.copyWith(
+                  color: preset.textSecondary,
+                  letterSpacing: 0.6,
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  effectivePath,
-                  style: t.bodySmall,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                effectivePath,
+                style: t.bodyMedium.copyWith(color: preset.textPrimary),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
           ),
-          const SizedBox(width: 10),
-          AppIconButton(
-            icon: CupertinoIcons.doc_on_clipboard,
-            tooltip: 'Скопіювати шлях',
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: effectivePath));
-              if (!context.mounted) return;
-              AppToast.show(context, 'Шлях скопійовано');
-            },
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(width: 10),
+        AppIconButton(
+          icon: CupertinoIcons.arrow_up_right_square,
+          tooltip: 'Відкрити у Finder',
+          onPressed: () async {
+            await FileReveal.openDirectory(effectivePath);
+          },
+        ),
+        AppIconButton(
+          icon: CupertinoIcons.doc_on_clipboard,
+          tooltip: 'Скопіювати шлях',
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: effectivePath));
+            if (!context.mounted) return;
+            AppToast.show(context, 'Шлях скопійовано');
+          },
+        ),
+      ],
     );
   }
 }
@@ -398,41 +433,43 @@ class _StoragePathRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppThemePreset preset = context.preset;
     final AppTextStyles t = context.appText;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: preset.surfaceMuted.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: preset.borderSoft),
-      ),
-      child: Row(
-        children: <Widget>[
-          Icon(
-            CupertinoIcons.folder_fill_badge_plus,
-            size: 18,
-            color: preset.textSecondary,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  'Тека з активним конфігом',
-                  style: t.labelMedium.copyWith(color: preset.textSecondary),
+    return Row(
+      children: <Widget>[
+        Icon(
+          CupertinoIcons.folder_fill_badge_plus,
+          size: 18,
+          color: preset.textSecondary,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                'Конфіг лежить тут',
+                style: t.labelSmall.copyWith(
+                  color: preset.textSecondary,
+                  letterSpacing: 0.6,
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  p.join(storagePath, 'config.json'),
-                  style: t.bodySmall,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                p.join(storagePath, 'config.json'),
+                style: t.bodyMedium.copyWith(color: preset.textPrimary),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+        AppIconButton(
+          icon: CupertinoIcons.arrow_up_right_square,
+          tooltip: 'Відкрити у Finder',
+          onPressed: () async {
+            await FileReveal.openDirectory(storagePath);
+          },
+        ),
+      ],
     );
   }
 }

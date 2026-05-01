@@ -27,12 +27,15 @@ class CsvConverter {
     required List<String> inputPaths,
     required ConverterConfig config,
     String? outputDirectoryOverride,
+    bool Function()? isCancelled,
   }) async* {
     for (final String input in inputPaths) {
+      if (isCancelled?.call() ?? false) return;
       yield* convertOne(
         inputPath: input,
         config: config,
         outputDirectoryOverride: outputDirectoryOverride,
+        isCancelled: isCancelled,
       );
     }
   }
@@ -41,6 +44,7 @@ class CsvConverter {
     required String inputPath,
     required ConverterConfig config,
     String? outputDirectoryOverride,
+    bool Function()? isCancelled,
   }) async* {
     final File input = File(inputPath);
     if (!input.existsSync()) {
@@ -59,8 +63,15 @@ class CsvConverter {
     );
     final String baseName = _baseName(input.path) + config.outputBaseSuffix;
 
-    final Stream<List<dynamic>> rowStream = input
-        .openRead()
+    // Wrap the raw byte stream so we can report bytes-read progress to the
+    // UI (the conversion hero shows a percentage based on total queue size,
+    // not the file count — otherwise a single 1 GB file sits at 0%).
+    int bytesRead = 0;
+    final Stream<List<int>> byteStream = input.openRead().map((List<int> b) {
+      bytesRead += b.length;
+      return b;
+    });
+    final Stream<List<dynamic>> rowStream = byteStream
         .transform(utf8.decoder)
         .transform(_csvCodec.decoder);
 
@@ -76,6 +87,13 @@ class CsvConverter {
     int rowsRead = 0;
     int rowsWritten = 0;
     int rowsSkipped = 0;
+    int rowsFailed = 0;
+
+    // Throttle progress emission so the UI never starves on huge rows or
+    // races to a 60 Hz rebuild on tiny ones. We emit at most once per N
+    // rows OR per ~512 KiB consumed, whichever fires first.
+    int lastEmitBytes = 0;
+    const int emitEveryBytes = 512 * 1024;
 
     _ChunkWriter writer = await _ChunkWriter.open(
       outputDir: outputDir,
@@ -93,6 +111,25 @@ class CsvConverter {
 
     try {
       await for (final List<dynamic> row in rowStream) {
+        // Honour user-requested cancellation between rows. We bail out
+        // gracefully — the writer is closed in the `finally`-equivalent
+        // block below and a `ConversionCancelled` event is emitted so the
+        // UI can show the proper state for this file.
+        if (isCancelled?.call() ?? false) {
+          await writer.close();
+          yield ConversionEvent.cancelled(
+            inputPath: inputPath,
+            outputDirectory: outputDir.path,
+            chunks: chunkIndex,
+            rowsRead: rowsRead,
+            rowsWritten: rowsWritten,
+            rowsSkipped: rowsSkipped,
+            rowsFailed: rowsFailed,
+            bytesRead: bytesRead,
+          );
+          return;
+        }
+
         if (!sawHeader) {
           headerRaw = row.map((dynamic v) => '$v').toList(growable: false);
           headerIndex = <String, int>{
@@ -105,33 +142,43 @@ class CsvConverter {
 
         rowsRead += 1;
 
-        final List<String> stringRow = row
-            .map((dynamic v) => v == null ? '' : '$v')
-            .toList(growable: false);
+        // Per-row guard: any unexpected error during projection / dedupe is
+        // treated as a single bad row — we count it under `rowsFailed` and
+        // move on instead of nuking the whole conversion. IO errors from
+        // the writer fall through to the outer catch (those are real).
+        late _RowResult outcome;
+        try {
+          final List<String> stringRow = row
+              .map((dynamic v) => v == null ? '' : '$v')
+              .toList(growable: false);
 
-        final _RowResult outcome = _projectRow(
-          row: stringRow,
-          headerIndex: headerIndex,
-          config: config,
-        );
-        if (outcome.skipped) {
-          rowsSkipped += 1;
-          continue;
-        }
+          outcome = _projectRow(
+            row: stringRow,
+            headerIndex: headerIndex,
+            config: config,
+          );
+          if (outcome.skipped) {
+            rowsSkipped += 1;
+            continue;
+          }
 
-        if (config.dedupe.enabled && config.dedupe.column.isNotEmpty) {
-          final int? idx = headerIndex[config.dedupe.column.toLowerCase()];
-          if (idx != null && idx < stringRow.length) {
-            final String key = stringRow[idx].trim();
-            if (key.isEmpty) {
-              rowsSkipped += 1;
-              continue;
-            }
-            if (!seenDedupe.add(key)) {
-              rowsSkipped += 1;
-              continue;
+          if (config.dedupe.enabled && config.dedupe.column.isNotEmpty) {
+            final int? idx = headerIndex[config.dedupe.column.toLowerCase()];
+            if (idx != null && idx < stringRow.length) {
+              final String key = stringRow[idx].trim();
+              if (key.isEmpty) {
+                rowsSkipped += 1;
+                continue;
+              }
+              if (!seenDedupe.add(key)) {
+                rowsSkipped += 1;
+                continue;
+              }
             }
           }
+        } on Object {
+          rowsFailed += 1;
+          continue;
         }
 
         await writer.writeRow(outcome.values!);
@@ -159,12 +206,16 @@ class CsvConverter {
           );
         }
 
-        if (rowsWritten % 5000 == 0) {
+        if (rowsWritten % 5000 == 0 ||
+            (bytesRead - lastEmitBytes) >= emitEveryBytes) {
+          lastEmitBytes = bytesRead;
           yield ConversionEvent.progress(
             inputPath: inputPath,
             rowsRead: rowsRead,
             rowsWritten: rowsWritten,
             rowsSkipped: rowsSkipped,
+            rowsFailed: rowsFailed,
+            bytesRead: bytesRead,
           );
         }
       }
@@ -184,6 +235,8 @@ class CsvConverter {
         rowsRead: rowsRead,
         rowsWritten: rowsWritten,
         rowsSkipped: rowsSkipped,
+        rowsFailed: rowsFailed,
+        bytesRead: bytesRead,
       );
     } on Object catch (error, stack) {
       try {
@@ -319,14 +372,22 @@ class CsvConverter {
   }
 }
 
-/// Default sink for converted files: a sibling `output/` directory next to
-/// the running executable.
+/// Best-effort synchronous fallback for the default output sink.
 ///
-/// On macOS releases that resolves to `<App.app>/Contents/MacOS/output/`;
-/// on Windows it lands beside `parts_stock.exe`; on Linux next to the binary.
-/// In `flutter run` it falls back to whatever the dev tool's working
-/// directory is, which keeps generated output predictable in development.
+/// `AppState` resolves the real path asynchronously via `path_provider`
+/// (sandbox-aware on macOS) and is the source of truth used by the UI.
+/// This helper exists for legacy / test paths and intentionally avoids
+/// returning anywhere inside the macOS `.app` bundle, which the sandbox
+/// (and code-signing) make read-only at runtime.
 String defaultExecutableOutputPath() {
+  if (Platform.isMacOS) {
+    // Under sandbox `$HOME` is the per-app container, so this lands in
+    // `~/Library/Containers/<bundle>/Data/Documents/output` — writable.
+    final String? home = Platform.environment['HOME'];
+    if (home != null && home.isNotEmpty) {
+      return p.join(home, 'Documents', 'output');
+    }
+  }
   return p.join(File(Platform.resolvedExecutable).parent.path, 'output');
 }
 
@@ -376,11 +437,13 @@ class _ChunkWriter {
     await _writeRaw(_encodeRow(values));
   }
 
+  // NOTE: do NOT `await _sink.flush()` per row — that issues a syscall per
+  // line and tanks throughput for large CSVs (50–100x slower in practice).
+  // `IOSink.add` buffers internally; the final `close()` flushes & fsyncs.
   Future<void> _writeRaw(String line) async {
     final List<int> bytes = utf8.encode(line);
     _sink.add(bytes);
     _bytesWritten += bytes.length;
-    await _sink.flush();
   }
 
   Future<void> close() async {
@@ -416,6 +479,8 @@ sealed class ConversionEvent {
     required int rowsRead,
     required int rowsWritten,
     required int rowsSkipped,
+    required int rowsFailed,
+    required int bytesRead,
   }) = ConversionProgress;
   factory ConversionEvent.done({
     required String inputPath,
@@ -424,12 +489,24 @@ sealed class ConversionEvent {
     required int rowsRead,
     required int rowsWritten,
     required int rowsSkipped,
+    required int rowsFailed,
+    required int bytesRead,
   }) = ConversionDone;
   factory ConversionEvent.error({
     required String inputPath,
     required String message,
     String? stackTrace,
   }) = ConversionError;
+  factory ConversionEvent.cancelled({
+    required String inputPath,
+    required String outputDirectory,
+    required int chunks,
+    required int rowsRead,
+    required int rowsWritten,
+    required int rowsSkipped,
+    required int rowsFailed,
+    required int bytesRead,
+  }) = ConversionCancelled;
 
   final String inputPath;
 }
@@ -466,10 +543,14 @@ class ConversionProgress extends ConversionEvent {
     required this.rowsRead,
     required this.rowsWritten,
     required this.rowsSkipped,
+    required this.rowsFailed,
+    required this.bytesRead,
   });
   final int rowsRead;
   final int rowsWritten;
   final int rowsSkipped;
+  final int rowsFailed;
+  final int bytesRead;
 }
 
 class ConversionDone extends ConversionEvent {
@@ -480,12 +561,16 @@ class ConversionDone extends ConversionEvent {
     required this.rowsRead,
     required this.rowsWritten,
     required this.rowsSkipped,
+    required this.rowsFailed,
+    required this.bytesRead,
   });
   final String outputDirectory;
   final int chunks;
   final int rowsRead;
   final int rowsWritten;
   final int rowsSkipped;
+  final int rowsFailed;
+  final int bytesRead;
 }
 
 class ConversionError extends ConversionEvent {
@@ -496,4 +581,27 @@ class ConversionError extends ConversionEvent {
   });
   final String message;
   final String? stackTrace;
+}
+
+/// Emitted when the user terminated the conversion via the UI's stop button.
+/// Mirrors [ConversionDone]'s payload so the row that handled this file can
+/// show the (partial) totals it managed to write before the abort.
+class ConversionCancelled extends ConversionEvent {
+  const ConversionCancelled({
+    required super.inputPath,
+    required this.outputDirectory,
+    required this.chunks,
+    required this.rowsRead,
+    required this.rowsWritten,
+    required this.rowsSkipped,
+    required this.rowsFailed,
+    required this.bytesRead,
+  });
+  final String outputDirectory;
+  final int chunks;
+  final int rowsRead;
+  final int rowsWritten;
+  final int rowsSkipped;
+  final int rowsFailed;
+  final int bytesRead;
 }

@@ -16,7 +16,6 @@ class SoundService {
 
   static final SoundService _instance = SoundService._();
 
-  static const String _tapPath = 'sounds/tap.mp3';
   static const String _savedPath = 'sounds/saved.mp3';
   static const String _dropPath = 'sounds/drop.mp3';
   static const String _resizeEndPath = 'sounds/resize_end.mp3';
@@ -30,10 +29,8 @@ class SoundService {
   static const double _cueVolume = 0.58;
 
   /// Per-cue overrides, also matching the source mix.
-  static double get _tapVolume => _cueVolume * 0.48;
   static const double _resizeEndHeaderVolume = _cueVolume * 0.72;
 
-  final AudioPlayer _tap = AudioPlayer();
   final AudioPlayer _saved = AudioPlayer();
   final AudioPlayer _drop = AudioPlayer();
   final AudioPlayer _resizeEnd = AudioPlayer();
@@ -48,6 +45,16 @@ class SoundService {
   /// Serializes alert / toast SFX so back-to-back cues do not clip each other.
   Future<void> _alertChain = Future<void>.value();
 
+  /// "Currently in flight" + "min interval" guard for the drop cue. Without
+  /// it, dropping multiple files in quick succession fires overlapping
+  /// `setVolume / seek / resume` chains on the same `AudioPlayer`, which
+  /// the macOS / Windows embedders do not always serialize internally —
+  /// eventually the native side wedges and the UI thread starts blocking
+  /// on the platform channel for audio.
+  bool _dropBusy = false;
+  DateTime _lastDropAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _minDropInterval = Duration(milliseconds: 120);
+
   bool get enabled => _enabled;
 
   void setEnabled(bool value) => _enabled = value;
@@ -57,7 +64,6 @@ class SoundService {
   Future<void> _preloadAll() async {
     try {
       await AudioCache.instance.loadAll(<String>[
-        _tapPath,
         _savedPath,
         _dropPath,
         _resizeEndPath,
@@ -75,7 +81,6 @@ class SoundService {
       } catch (_) {
         // lowLatency is unsupported on some embedders; mediaPlayer is fine.
       }
-      await _prepare(_tap, _tapPath, volume: _tapVolume);
       await _prepare(_saved, _savedPath);
       await _prepare(_drop, _dropPath);
       await _prepare(_resizeEnd, _resizeEndPath);
@@ -100,15 +105,28 @@ class SoundService {
   }
 
   /// Generic UI tap (buttons, sidebar items, segmented controls).
-  void tap() => unawaited(
-    _play(_tap, _tapPath, stopFirst: true, volume: _tapVolume),
-  );
+  ///
+  /// Intentionally a no-op — the click cue is disabled product-wide. Kept on
+  /// the API so existing call sites stay tidy and we can re-enable it later
+  /// without churning the whole codebase.
+  void tap() {}
 
   /// Persisted state changed — config saved, mapping applied, etc.
   void saved() => unawaited(_play(_saved, _savedPath));
 
   /// File added to the conversion queue.
-  void drop() => unawaited(_play(_drop, _dropPath));
+  void drop() {
+    if (!_enabled || _dropBusy) return;
+    final DateTime now = DateTime.now();
+    if (now.difference(_lastDropAt) < _minDropInterval) return;
+    _lastDropAt = now;
+    _dropBusy = true;
+    unawaited(
+      _play(_drop, _dropPath).whenComplete(() {
+        _dropBusy = false;
+      }),
+    );
+  }
 
   /// Soft "release" cue used when dismissing dialogs / clearing the queue.
   void resizeEnd({bool headerBack = false}) => unawaited(

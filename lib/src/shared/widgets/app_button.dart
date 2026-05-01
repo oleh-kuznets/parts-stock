@@ -5,10 +5,11 @@ import '../../app/theme/app_theme.dart';
 import '../../app/theme/app_theme_preset.dart';
 import '../../core/services/sound_service.dart';
 
-enum AppButtonVariant { primary, secondary, plain, danger }
+/// All button variants share the same height, radius, padding and
+/// typography — only the surface and content colors change. This keeps
+/// action rows aligned to the same baseline grid.
+enum AppButtonVariant { primary, secondary, danger, link }
 
-/// Compact branded Cupertino button used everywhere instead of Material's
-/// `ElevatedButton` / `OutlinedButton` / `TextButton`.
 class AppButton extends StatelessWidget {
   const AppButton({
     super.key,
@@ -38,15 +39,6 @@ class AppButton extends StatelessWidget {
     this.loading = false,
   }) : variant = AppButtonVariant.secondary;
 
-  const AppButton.plain({
-    super.key,
-    required this.label,
-    this.icon,
-    this.onPressed,
-    this.compact = false,
-    this.loading = false,
-  }) : variant = AppButtonVariant.plain;
-
   const AppButton.danger({
     super.key,
     required this.label,
@@ -55,6 +47,28 @@ class AppButton extends StatelessWidget {
     this.compact = false,
     this.loading = false,
   }) : variant = AppButtonVariant.danger;
+
+  /// Inline text-style action — same height as the others so it lines up in
+  /// action rows, but visually feels like a hyperlink (no surface fill).
+  const AppButton.link({
+    super.key,
+    required this.label,
+    this.icon,
+    this.onPressed,
+    this.compact = false,
+    this.loading = false,
+  }) : variant = AppButtonVariant.link;
+
+  /// Backwards-compat alias kept so older call sites that used `.plain` keep
+  /// compiling — renders identically to [AppButton.link].
+  const AppButton.plain({
+    super.key,
+    required this.label,
+    this.icon,
+    this.onPressed,
+    this.compact = false,
+    this.loading = false,
+  }) : variant = AppButtonVariant.link;
 
   final String label;
   final IconData? icon;
@@ -68,101 +82,125 @@ class AppButton extends StatelessWidget {
     final AppThemePreset preset = context.preset;
     final AppTextStyles t = context.appText;
     final bool enabled = onPressed != null && !loading;
+    final double height = compact
+        ? AppTokens.controlCompactHeight
+        : AppTokens.controlMinHeight;
+    final double horizontalPadding = compact
+        ? AppTokens.buttonCompactPaddingHorizontal
+        : AppTokens.buttonPaddingHorizontal;
 
-    final (Color bg, Color fg, BoxBorder? border) = switch (variant) {
-      AppButtonVariant.primary => (
-        enabled
-            ? preset.heroEnd
-            : Color.lerp(preset.heroEnd, preset.surfaceMuted, 0.45)!,
-        preset.heroOnPrimary,
-        null,
-      ),
-      AppButtonVariant.secondary => (
-        preset.surfaceBase,
-        preset.textPrimary,
-        Border.all(color: preset.borderSoft, width: 1.2),
-      ),
-      AppButtonVariant.plain => (
-        const Color(0x00000000),
-        preset.heroEnd,
-        null,
-      ),
-      AppButtonVariant.danger => (
-        enabled
-            ? preset.dangerStrong
-            : Color.lerp(preset.dangerStrong, preset.surfaceMuted, 0.45)!,
-        const Color(0xFFFFFFFF),
-        null,
-      ),
-    };
-
-    final EdgeInsetsGeometry padding = compact
-        ? const EdgeInsets.symmetric(horizontal: 14, vertical: 8)
-        : const EdgeInsets.symmetric(
-            horizontal: AppTokens.buttonPaddingHorizontal,
-            vertical: AppTokens.buttonPaddingVertical,
-          );
+    final _ButtonPalette palette = _palette(variant, preset, enabled: enabled);
 
     final Widget content = loading
         ? SizedBox(
-            width: compact ? 14 : 18,
-            height: compact ? 14 : 18,
-            child: CupertinoActivityIndicator(color: fg, radius: 9),
+            width: 14,
+            height: 14,
+            child: CupertinoActivityIndicator(color: palette.fg, radius: 7),
           )
         : Row(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               if (icon != null) ...<Widget>[
-                Icon(icon, size: compact ? 14 : 16, color: fg),
-                const SizedBox(width: 8),
+                Icon(icon, size: compact ? 13 : 15, color: palette.fg),
+                const SizedBox(width: 7),
               ],
               Text(
                 label,
-                style: t.button.copyWith(color: fg, fontSize: compact ? 12.5 : 14.5),
+                style: t.button.copyWith(
+                  color: palette.fg,
+                  fontSize: compact ? 12.5 : 13.5,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
           );
 
+    // NOTE: do NOT set `alignment` on the container — that would force it
+    // to expand to the parent's width whenever the parent is bounded
+    // (e.g. inside `Align` or a stretching `Column`). The `Row` content is
+    // `mainAxisSize.min` and naturally vertically centred via Row's default
+    // cross-axis alignment, so the container hugs its content, which is what
+    // every call site expects.
+    final Widget surface = Container(
+      height: height,
+      padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
+      decoration: BoxDecoration(
+        color: palette.bg,
+        borderRadius: BorderRadius.circular(AppTokens.buttonCornerRadius),
+        border: palette.border,
+      ),
+      child: content,
+    );
+
     return CupertinoButton(
-      padding: padding,
+      padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
+      pressedOpacity: variant == AppButtonVariant.link ? 0.55 : 0.86,
+      borderRadius: BorderRadius.circular(AppTokens.buttonCornerRadius),
       onPressed: enabled
           ? () {
               SoundService().tap();
               onPressed!();
             }
           : null,
-      borderRadius: BorderRadius.circular(AppTokens.buttonCornerRadius),
-      color: variant == AppButtonVariant.primary ||
-              variant == AppButtonVariant.danger
-          ? bg
-          : null,
-      pressedOpacity: 0.86,
-      minimumSize: Size(
-        compact ? 0 : AppTokens.buttonMinWidth,
-        compact ? 32 : AppTokens.controlMinHeight,
-      ),
-      child: variant == AppButtonVariant.secondary
-          ? Container(
-              padding: padding,
-              decoration: BoxDecoration(
-                color: bg,
-                border: border,
-                borderRadius:
-                    BorderRadius.circular(AppTokens.buttonCornerRadius),
-              ),
-              constraints: BoxConstraints(
-                minWidth: compact ? 0 : AppTokens.buttonMinWidth,
-                minHeight: compact ? 32 : AppTokens.controlMinHeight,
-              ),
-              alignment: Alignment.center,
-              child: content,
-            )
-          : content,
+      child: surface,
     );
+  }
+
+  _ButtonPalette _palette(
+    AppButtonVariant variant,
+    AppThemePreset preset, {
+    required bool enabled,
+  }) {
+    switch (variant) {
+      case AppButtonVariant.primary:
+        final Color bg = enabled
+            ? preset.heroEnd
+            : Color.lerp(preset.heroEnd, preset.surfaceMuted, 0.5)!;
+        return _ButtonPalette(
+          bg: bg,
+          fg: preset.heroOnPrimary,
+          border: null,
+        );
+      case AppButtonVariant.secondary:
+        return _ButtonPalette(
+          bg: preset.surfaceBase,
+          fg: enabled ? preset.textPrimary : preset.textMuted,
+          border: Border.all(
+            color: enabled
+                ? preset.borderSoft
+                : preset.borderSoft.withValues(alpha: 0.5),
+            width: 1,
+          ),
+        );
+      case AppButtonVariant.danger:
+        final Color bg = enabled
+            ? preset.dangerStrong
+            : Color.lerp(preset.dangerStrong, preset.surfaceMuted, 0.5)!;
+        return _ButtonPalette(
+          bg: bg,
+          fg: const Color(0xFFFFFFFF),
+          border: null,
+        );
+      case AppButtonVariant.link:
+        return _ButtonPalette(
+          bg: const Color(0x00000000),
+          fg: enabled ? preset.heroEnd : preset.textMuted,
+          border: null,
+        );
+    }
   }
 }
 
-/// Icon-only Cupertino button used in lists / toolbars.
+class _ButtonPalette {
+  const _ButtonPalette({required this.bg, required this.fg, this.border});
+  final Color bg;
+  final Color fg;
+  final BoxBorder? border;
+}
+
+/// Icon-only button used in lists / toolbars. Matches [AppButton]'s minimum
+/// touch target and uses the same tap cue.
 class AppIconButton extends StatelessWidget {
   const AppIconButton({
     super.key,
@@ -170,7 +208,7 @@ class AppIconButton extends StatelessWidget {
     this.onPressed,
     this.tooltip,
     this.color,
-    this.size = 18,
+    this.size = 16,
   });
 
   final IconData icon;
@@ -182,16 +220,24 @@ class AppIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final AppThemePreset preset = context.preset;
+    final Color resolved = color ?? preset.textPrimary;
     final Widget button = CupertinoButton(
       padding: EdgeInsets.zero,
-      minimumSize: const Size(34, 34),
+      minimumSize: const Size(32, 32),
+      pressedOpacity: 0.55,
       onPressed: onPressed == null
           ? null
           : () {
               SoundService().tap();
               onPressed!();
             },
-      child: Icon(icon, size: size, color: color ?? preset.textSecondary),
+      child: Icon(
+        icon,
+        size: size,
+        color: onPressed == null
+            ? resolved.withValues(alpha: 0.4)
+            : resolved,
+      ),
     );
     if (tooltip == null) return button;
     return _AppHoverTooltip(message: tooltip!, child: button);

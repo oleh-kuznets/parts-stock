@@ -5,17 +5,31 @@ import 'app_theme_preset.dart';
 
 /// Theme tokens for control geometry.
 abstract final class AppTokens {
-  static const double fieldCornerRadius = 12;
-  static const double buttonCornerRadius = 14;
-  static const double cardCornerRadius = 22;
-  static const double controlMinHeight = 40;
-  static const double buttonMinWidth = 120;
-  static const double buttonPaddingHorizontal = 22;
-  static const double buttonPaddingVertical = 12;
-  static const double fieldPaddingHorizontal = 14;
-  static const double fieldPaddingVertical = 12;
+  static const double fieldCornerRadius = 10;
+  static const double buttonCornerRadius = 10;
+  static const double cardCornerRadius = 18;
+
+  /// Default control height. Buttons, fields, dropdowns and segmented
+  /// controls all snap to this so action rows align cleanly to the grid.
+  static const double controlMinHeight = 36;
+
+  /// Tighter control height for inline / dense actions (page header bar).
+  static const double controlCompactHeight = 30;
+
+  static const double buttonMinWidth = 96;
+  static const double buttonPaddingHorizontal = 16;
+  static const double buttonCompactPaddingHorizontal = 12;
+
+  static const double fieldPaddingHorizontal = 12;
+  static const double fieldPaddingVertical = 10;
+
   static const double screenGutter = 28;
-  static const double sectionGap = 20;
+  static const double screenGutterCompact = 18;
+  static const double sectionGap = 18;
+
+  /// Layout breakpoints (logical pixels, excluding sidebar).
+  static const double breakpointCompact = 720;
+  static const double breakpointMedium = 1100;
 }
 
 /// Builds a [CupertinoThemeData] keyed by the active brand preset.

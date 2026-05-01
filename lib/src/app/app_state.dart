@@ -1,4 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/cupertino.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../core/models/converter_config.dart';
 import '../core/services/config_storage.dart';
@@ -14,13 +19,41 @@ enum AppThemeMode { system, light, dark }
 /// targeted helpers) to mutate state. The notifier guarantees the on-disk
 /// JSON stays in sync with what the UI shows.
 class AppState extends ChangeNotifier {
-  AppState({required this.storage, required ConverterConfig initialConfig})
-    : _config = initialConfig;
+  AppState({
+    required this.storage,
+    required ConverterConfig initialConfig,
+    required String defaultOutputPath,
+  })  : _config = initialConfig,
+        _defaultOutputPath = defaultOutputPath;
 
   static Future<AppState> bootstrap() async {
     final ConfigStorage storage = ConfigStorage();
     final ConverterConfig initial = await storage.load();
-    return AppState(storage: storage, initialConfig: initial);
+    final String defaultOutput = await _resolveDefaultOutputPath();
+    return AppState(
+      storage: storage,
+      initialConfig: initial,
+      defaultOutputPath: defaultOutput,
+    );
+  }
+
+  /// Resolves a writable default sink for converted files.
+  ///
+  /// Windows / Linux ship as plain executables, so we keep the user's
+  /// expected behavior — `<dir-of-binary>/output/`. macOS apps run inside
+  /// the sandbox and the bundle's `Contents/MacOS` directory is read-only,
+  /// so we fall back to the per-app Documents container resolved by
+  /// `path_provider` (visible in Finder under the app's container).
+  static Future<String> _resolveDefaultOutputPath() async {
+    if (Platform.isMacOS) {
+      try {
+        final Directory docs = await getApplicationDocumentsDirectory();
+        return p.join(docs.path, 'output');
+      } on Object {
+        // Fall through — give the user *something* even if path_provider trips.
+      }
+    }
+    return p.join(File(Platform.resolvedExecutable).parent.path, 'output');
   }
 
   final ConfigStorage storage;
@@ -28,11 +61,53 @@ class AppState extends ChangeNotifier {
   AppThemeMode _themeMode = AppThemeMode.system;
   String? _outputDirectoryOverride;
   bool _uiSoundsEnabled = true;
+  final String _defaultOutputPath;
 
   ConverterConfig get config => _config;
   AppThemeMode get themeMode => _themeMode;
   String? get outputDirectoryOverride => _outputDirectoryOverride;
   bool get uiSoundsEnabled => _uiSoundsEnabled;
+
+  /// `true` while a conversion run is in flight. The shell uses this to
+  /// intercept the OS close request and warn the user before quitting.
+  bool get isConverting => _isConverting;
+  bool _isConverting = false;
+
+  void setConverting(bool value) {
+    if (_isConverting == value) return;
+    _isConverting = value;
+    notifyListeners();
+  }
+
+  /// CSV file paths dropped onto the app from the OS file browser.
+  ///
+  /// `AppShell` catches the OS drop event from any tab, switches to the
+  /// converter, and broadcasts the paths here. `ConvertPage` subscribes to
+  /// merge them into its queue. Using a broadcast stream (rather than a
+  /// list on the notifier) means each drop is delivered exactly once and
+  /// can't get re-applied during unrelated `notifyListeners` calls.
+  Stream<List<String>> get droppedFiles => _droppedFilesController.stream;
+  final StreamController<List<String>> _droppedFilesController =
+      StreamController<List<String>>.broadcast();
+
+  void emitDroppedFiles(List<String> paths) {
+    if (paths.isEmpty) return;
+    _droppedFilesController.add(paths);
+  }
+
+  @override
+  void dispose() {
+    _droppedFilesController.close();
+    super.dispose();
+  }
+
+  /// Writable default sink resolved at bootstrap. Always usable on the
+  /// current platform — even under macOS sandbox.
+  String get defaultOutputPath => _defaultOutputPath;
+
+  /// Active sink that the converter will actually write to right now.
+  String get effectiveOutputPath =>
+      _outputDirectoryOverride ?? _defaultOutputPath;
 
   Future<void> updateConfig(ConverterConfig next) async {
     if (identical(next, _config)) return;

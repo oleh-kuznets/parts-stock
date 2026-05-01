@@ -21,32 +21,20 @@ class EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppTextStyles t = context.appText;
     final AppThemePreset preset = context.preset;
-    final Brightness brightness = CupertinoTheme.brightnessOf(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 16),
+      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: preset.iconAccentTileBackground(
-                preset.heroEnd,
-                brightness,
-              ),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Icon(icon, color: preset.heroEnd, size: 26),
-          ),
-          const SizedBox(height: 14),
+          Icon(icon, color: preset.textMuted, size: 22),
+          const SizedBox(height: 12),
           Text(title, textAlign: TextAlign.center, style: t.titleMedium),
           if (message != null) ...<Widget>[
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             Text(message!, textAlign: TextAlign.center, style: t.bodySmall),
           ],
           if (action != null) ...<Widget>[
-            const SizedBox(height: 18),
+            const SizedBox(height: 16),
             action!,
           ],
         ],

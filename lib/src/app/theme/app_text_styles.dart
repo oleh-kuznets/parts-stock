@@ -2,15 +2,16 @@ import 'package:flutter/cupertino.dart';
 
 import 'app_theme_preset.dart';
 
-const String _kBodyFontFamily = 'Montserrat';
-const String _kHeadingFontFamily = 'RobotoFlex';
+/// Bundled SF Pro variable font — used everywhere so the typography is
+/// identical on macOS (where SF is the system default) and on Windows / Linux
+/// (where we ship the same file).
+const String _kFontFamily = 'SF Pro';
 
 /// Typography tokens for Parts Stock.
 ///
-/// Cupertino has a thin built-in [CupertinoTextThemeData], so we keep our
-/// own sized text scale that all pages can read via `context.appText`.
-/// Family choices mirror the WiseWater Connect mobile app: Montserrat for
-/// body / labels and RobotoFlex for headings.
+/// Cupertino's built-in [CupertinoTextThemeData] is intentionally thin, so we
+/// keep our own scale that pages reach via `context.appText`. Both display and
+/// body use the same family (SF Pro) — only weight, size and tracking change.
 @immutable
 class AppTextStyles {
   const AppTextStyles._({
@@ -30,50 +31,57 @@ class AppTextStyles {
   });
 
   factory AppTextStyles.fromPreset(AppThemePreset preset) {
-    final TextStyle heading = TextStyle(
-      fontFamily: _kHeadingFontFamily,
+    final TextStyle base = TextStyle(
+      fontFamily: _kFontFamily,
       color: preset.textPrimary,
+      // SF benefits from a slightly negative tracking at display sizes.
       letterSpacing: -0.2,
       height: 1.24,
     );
-    final TextStyle body = TextStyle(
-      fontFamily: _kBodyFontFamily,
+    final TextStyle body = base.copyWith(
       color: preset.textSecondary,
-      height: 1.42,
+      height: 1.45,
+      letterSpacing: -0.05,
     );
 
     return AppTextStyles._(
-      headlineLarge: heading.copyWith(
+      headlineLarge: base.copyWith(
         fontSize: 28,
         fontWeight: FontWeight.w700,
-        height: 1.2,
+        height: 1.18,
+        letterSpacing: -0.4,
       ),
-      headlineMedium: heading.copyWith(
-        fontSize: 24,
+      headlineMedium: base.copyWith(
+        fontSize: 23,
         fontWeight: FontWeight.w700,
-        height: 1.24,
+        height: 1.22,
+        letterSpacing: -0.35,
       ),
-      headlineSmall: heading.copyWith(
-        fontSize: 20,
+      headlineSmall: base.copyWith(
+        fontSize: 19,
         fontWeight: FontWeight.w700,
-        height: 1.28,
+        height: 1.26,
+        letterSpacing: -0.3,
       ),
-      titleLarge: heading.copyWith(
-        fontSize: 18,
+      titleLarge: base.copyWith(
+        fontSize: 17,
         fontWeight: FontWeight.w700,
         height: 1.3,
+        letterSpacing: -0.2,
       ),
-      titleMedium: heading.copyWith(
-        fontSize: 15.5,
+      titleMedium: base.copyWith(
+        fontSize: 15,
         fontWeight: FontWeight.w700,
         height: 1.34,
+        letterSpacing: -0.15,
       ),
-      titleSmall: heading.copyWith(
+      titleSmall: base.copyWith(
         fontSize: 13.5,
         fontWeight: FontWeight.w600,
         height: 1.34,
+        letterSpacing: -0.1,
       ),
-      bodyLarge: body.copyWith(fontSize: 15),
+      bodyLarge: body.copyWith(fontSize: 15, color: preset.textPrimary),
       bodyMedium: body.copyWith(fontSize: 14),
       bodySmall: body.copyWith(
         fontSize: 12,
@@ -85,24 +93,28 @@ class AppTextStyles {
         fontWeight: FontWeight.w600,
         color: preset.textPrimary,
         height: 1.2,
+        letterSpacing: -0.05,
       ),
       labelMedium: body.copyWith(
         fontSize: 12,
         fontWeight: FontWeight.w600,
         color: preset.textPrimary,
         height: 1.2,
+        letterSpacing: 0,
       ),
       labelSmall: body.copyWith(
         fontSize: 11,
         fontWeight: FontWeight.w600,
         color: preset.textMuted,
         height: 1.2,
+        letterSpacing: 0.1,
       ),
-      button: body.copyWith(
-        fontSize: 14.5,
-        fontWeight: FontWeight.w700,
+      button: base.copyWith(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
         color: preset.textPrimary,
-        letterSpacing: -0.1,
+        letterSpacing: -0.05,
+        height: 1.2,
       ),
     );
   }

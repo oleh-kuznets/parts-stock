@@ -17,6 +17,7 @@ dependencies:
   intl: ^0.20.2
   path: ^1.9.1
   audioplayers: ^6.6.0
+  desktop_drop: ^0.7.1
 
 dev_dependencies:
   flutter_test:
@@ -29,15 +30,11 @@ flutter:
     - assets/branding/
     - assets/sounds/
   fonts:
-    - family: Montserrat
+    # Bundled SF Pro (the same SFNS variable font macOS uses system-wide).
+    # Shipping it as a Flutter asset gives us identical typography on
+    # Windows / Linux too — the user explicitly asked for SF everywhere.
+    - family: SF Pro
       fonts:
-        - asset: assets/fonts/Montserrat-Regular.ttf
-        - asset: assets/fonts/Montserrat-Medium.ttf
-          weight: 500
-        - asset: assets/fonts/Montserrat-SemiBold.ttf
-          weight: 600
-        - asset: assets/fonts/Montserrat-Bold.ttf
-          weight: 700
-    - family: RobotoFlex
-      fonts:
-        - asset: assets/fonts/RobotoFlex.ttf
+        - asset: assets/fonts/SFPro.ttf
+        - asset: assets/fonts/SFProItalic.ttf
+          style: italic
