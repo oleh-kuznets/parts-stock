@@ -95,7 +95,14 @@ class _ConvertPageState extends State<ConvertPage> {
       if (next.any((_QueuedFile q) => q.path == path)) continue;
       final ConverterConfig? sidecar =
           await widget.appState.storage.tryLoadSidecar(path);
-      next.add(_QueuedFile(path: path, sidecar: sidecar));
+      // Probe the size once now (we're already on an async path picking up
+      // the sidecar) — keeps every later `build` allocation-free.
+      final int sizeBytes = _QueuedFile.probeSize(path);
+      next.add(_QueuedFile(
+        path: path,
+        sidecar: sidecar,
+        sizeBytes: sizeBytes,
+      ));
     }
     if (next.isEmpty || !mounted) return;
     if (playSound) SoundService().drop();
@@ -1104,25 +1111,35 @@ class _StatTile extends StatelessWidget {
 // =============================================================================
 
 class _QueuedFile {
-  const _QueuedFile({required this.path, this.sidecar});
+  const _QueuedFile({
+    required this.path,
+    required this.sizeBytes,
+    this.sidecar,
+  });
 
   final String path;
   final ConverterConfig? sidecar;
 
+  /// Snapshot of the file size taken when the row was added to the queue.
+  ///
+  /// Reading file sizes is not free — on Windows under antivirus a single
+  /// `lengthSync` can cost tens of milliseconds. The convert page rebuilds
+  /// often (every progress tick, every tab switch) and reads this value
+  /// from three places per build, so doing the I/O inline turned tab
+  /// switches into a stutter-fest. Capture once at insertion, never again.
+  final int sizeBytes;
+
   String get name => p.basename(path);
   String get parent => p.dirname(path);
 
-  int get sizeBytes {
+  String get sizeLabel => sizeBytes == 0 ? '—' : _formatBytes(sizeBytes);
+
+  static int probeSize(String path) {
     try {
       return File(path).lengthSync();
     } on Object {
       return 0;
     }
-  }
-
-  String get sizeLabel {
-    final int b = sizeBytes;
-    return b == 0 ? '—' : _formatBytes(b);
   }
 }
 

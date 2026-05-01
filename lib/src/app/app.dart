@@ -131,12 +131,13 @@ class _AppShellState extends State<AppShell> {
   int _index = 0;
   bool _dropping = false;
 
-  // Destinations are described once (icons / label / page builder) and then
-  // re-resolved per build. We deliberately do NOT keep all four pages
-  // mounted in an `IndexedStack` — Flutter still lays out every child of
-  // an indexed stack on every frame, which adds 4× the layout work and
-  // makes tab switches feel like the UI thread is choking. Mounting only
-  // the active page keeps the frame budget tight.
+  // Destinations are described once (icons / label / page builder) and
+  // then mounted on first visit — see `_LazyTabStack` below. Pages are
+  // kept alive across tab switches so flipping back is instant: no
+  // controller re-creation, no `path_provider` re-roundtrips, no scroll
+  // reset. Crucially, this also keeps the conversion alive when the user
+  // wanders off to "Налаштування" mid-run (the queue + stream subscription
+  // live in `ConvertPage` state).
   late final List<_NavDestination> _destinations = <_NavDestination>[
     _NavDestination(
       icon: CupertinoIcons.bolt,
@@ -236,16 +237,17 @@ class _AppShellState extends State<AppShell> {
                       child: Stack(
                         fit: StackFit.expand,
                         children: <Widget>[
-                          // Only the active page is in the tree. Switching
-                          // tabs tears down the previous page and mounts the
-                          // next — that's intentional: laying out 4 pages
-                          // every frame (à la IndexedStack) made switches
-                          // hang on bigger lists. Per-tab persistent state
-                          // (queue, etc.) should live in `AppState`, not in
-                          // the page widget.
-                          KeyedSubtree(
-                            key: ValueKey<int>(_index),
-                            child: _destinations[_index].build(context),
+                          // All four feature pages are mounted up-front
+                          // and kept alive — see `_AliveTabStack`. Tab
+                          // switches become a paint-layer flip rather than
+                          // a teardown + rebuild + first-paint shader
+                          // compile (which on Windows reliably looked like
+                          // the app had hung).
+                          _AliveTabStack(
+                            index: _index,
+                            childCount: _destinations.length,
+                            builder: (BuildContext ctx, int i) =>
+                                _destinations[i].build(ctx),
                           ),
                           // Only rendered while a drag is in flight. Keeping
                           // it permanently alive (with `AnimatedOpacity` at 0)
@@ -275,6 +277,100 @@ class _AppShellState extends State<AppShell> {
 }
 
 enum _SidebarMode { full, icons }
+
+/// Eager, shader-prewarming tab stack for the four feature pages.
+///
+/// Two problems we're fighting at once:
+///
+///  1. **Tab switches re-doing work.** `KeyedSubtree(key: ValueKey(index))`
+///     tears the previous page down on every flip — disposing the page's
+///     `TextEditingController`s, cancelling its listeners (including the
+///     conversion stream subscription!), and resetting scroll. On Windows
+///     each round-trip feels like a freeze.
+///
+///  2. **First-paint shader compilation hitch.** Our hero panels use a
+///     `BoxShadow` with `blurRadius: 38`, the convert page's progress
+///     ring uses a `SweepGradient`, and the CSV preview uses a
+///     `ShaderMask`. On Windows DirectX (and ANGLE) the shader for each
+///     of those is compiled the first time it's actually painted — and
+///     that compilation runs on the UI thread. So the first time the
+///     user clicks a tab they've never visited, the click looks like the
+///     app stopped responding for 100–500 ms.
+///
+/// Fix:
+///  * Mount all four pages once and keep them alive for the rest of the
+///    session.
+///  * On the **very first frame**, paint every page (the active one on
+///    top, the others stacked under it). The user only ever sees the
+///    active page, but Skia/Impeller now has reason to actually rasterize
+///    every page once — which compiles all the shaders during launch.
+///  * On every frame after that, hidden pages are Offstage'd so we don't
+///    burn paint cycles on them.
+///
+/// State (controllers, listeners, `_runStates`, scroll position, …) is
+/// preserved across tab flips because each child sits behind a stable
+/// `ValueKey<int>(i)` regardless of stack mode.
+class _AliveTabStack extends StatefulWidget {
+  const _AliveTabStack({
+    required this.index,
+    required this.childCount,
+    required this.builder,
+  });
+
+  final int index;
+  final int childCount;
+  final IndexedWidgetBuilder builder;
+
+  @override
+  State<_AliveTabStack> createState() => _AliveTabStackState();
+}
+
+class _AliveTabStackState extends State<_AliveTabStack> {
+  /// `false` for exactly one frame after mount, then flips to `true`. The
+  /// "false" frame is what gives the GPU a reason to compile every page's
+  /// shaders before the user ever interacts with the sidebar.
+  bool _shadersPrewarmed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((Duration _) {
+      if (!mounted) return;
+      setState(() => _shadersPrewarmed = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Render order: every non-active page first, then the active page on
+    // top. With keyed children the framework still matches state across
+    // re-orderings, so this stays safe when `widget.index` changes.
+    final List<Widget> stacked = <Widget>[];
+    for (int i = 0; i < widget.childCount; i++) {
+      if (i == widget.index) continue;
+      stacked.add(_wrap(i, active: false));
+    }
+    stacked.add(_wrap(widget.index, active: true));
+
+    return Stack(fit: StackFit.expand, children: stacked);
+  }
+
+  Widget _wrap(int i, {required bool active}) {
+    final bool offstage = !active && _shadersPrewarmed;
+    return Positioned.fill(
+      key: ValueKey<int>(i),
+      child: Offstage(
+        offstage: offstage,
+        // Hidden pages stop ticking their animations but keep their
+        // state. The active page ticks normally.
+        child: TickerMode(
+          enabled: active,
+          child: RepaintBoundary(child: widget.builder(context, i)),
+        ),
+      ),
+    );
+  }
+}
 
 class _NavDestination {
   const _NavDestination({
