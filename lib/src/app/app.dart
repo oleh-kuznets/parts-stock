@@ -214,9 +214,6 @@ class _AppShellState extends State<AppShell> {
             }
             return Row(
               children: <Widget>[
-                // Sidebar paints its own animated glider — wrap it in a
-                // RepaintBoundary so those 280 ms ticks never bleed up and
-                // dirty the page area's layer.
                 RepaintBoundary(
                   child: _Sidebar(
                     destinations: _destinations,
@@ -279,14 +276,15 @@ class _AppShellState extends State<AppShell> {
 
 enum _SidebarMode { full, icons }
 
-/// Keep-alive tab host for the four feature pages.
+/// Eager, shader-prewarming tab stack for the four feature pages.
 ///
-/// The old Stack/Offstage version kept tab state, but it also laid out every
-/// hidden page during Windows resize. This PageView keeps visited tabs alive
-/// without making resize pay for inactive pages.
+/// Mounts all pages once and keeps them alive across tab switches. The first
+/// frame paints the pages once so Windows doesn't have to build a new page and
+/// compile its shaders on the user's first navigation click.
 ///
 /// State (controllers, listeners, `_runStates`, scroll position, ...) is
-/// preserved across tab flips by [_KeepAliveTabPage].
+/// preserved across tab flips because each child sits behind a stable
+/// `ValueKey<int>(i)` regardless of stack order.
 class _AliveTabStack extends StatefulWidget {
   const _AliveTabStack({
     required this.index,
@@ -303,62 +301,41 @@ class _AliveTabStack extends StatefulWidget {
 }
 
 class _AliveTabStackState extends State<_AliveTabStack> {
-  late final PageController _controller;
+  bool _shadersPrewarmed = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = PageController(initialPage: widget.index);
-  }
-
-  @override
-  void didUpdateWidget(covariant _AliveTabStack oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.index == widget.index) return;
-    if (!_controller.hasClients) return;
-    _controller.jumpToPage(widget.index);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+    WidgetsBinding.instance.addPostFrameCallback((Duration _) {
+      if (!mounted) return;
+      setState(() => _shadersPrewarmed = true);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return PageView.builder(
-      controller: _controller,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: widget.childCount,
-      itemBuilder: (BuildContext context, int i) {
-        return _KeepAliveTabPage(
-          key: ValueKey<int>(i),
+    final List<Widget> stacked = <Widget>[];
+    for (int i = 0; i < widget.childCount; i++) {
+      if (i == widget.index) continue;
+      stacked.add(_wrap(i, active: false));
+    }
+    stacked.add(_wrap(widget.index, active: true));
+
+    return Stack(fit: StackFit.expand, children: stacked);
+  }
+
+  Widget _wrap(int i, {required bool active}) {
+    final bool offstage = !active && _shadersPrewarmed;
+    return Positioned.fill(
+      key: ValueKey<int>(i),
+      child: Offstage(
+        offstage: offstage,
+        child: TickerMode(
+          enabled: active,
           child: RepaintBoundary(child: widget.builder(context, i)),
-        );
-      },
+        ),
+      ),
     );
-  }
-}
-
-class _KeepAliveTabPage extends StatefulWidget {
-  const _KeepAliveTabPage({super.key, required this.child});
-
-  final Widget child;
-
-  @override
-  State<_KeepAliveTabPage> createState() => _KeepAliveTabPageState();
-}
-
-class _KeepAliveTabPageState extends State<_KeepAliveTabPage>
-    with AutomaticKeepAliveClientMixin<_KeepAliveTabPage> {
-  @override
-  bool get wantKeepAlive => true;
-
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
-    return widget.child;
   }
 }
 
@@ -390,7 +367,6 @@ class _Sidebar extends StatelessWidget {
   static const double _itemHeightCompact = 46;
   static const double _itemHorizontalPadFull = 12;
   static const double _itemHorizontalPadCompact = 10;
-  static const double _itemVerticalInset = 3;
 
   final List<_NavDestination> destinations;
   final int activeIndex;
@@ -443,97 +419,24 @@ class _Sidebar extends StatelessWidget {
           ),
           SizedBox(
             height: listHeight,
-            child: Stack(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                // The "glider" — a single shared active background that
-                // slides between rows when the selection changes.
-                AnimatedPositioned(
-                  duration: const Duration(milliseconds: 280),
-                  curve: Curves.easeOutCubic,
-                  top: activeIndex * itemH + _itemVerticalInset,
-                  left: horizontalPad,
-                  right: horizontalPad,
-                  height: itemH - _itemVerticalInset * 2,
-                  child: _SidebarGlider(preset: preset),
-                ),
-                // The matching vertical accent bar at the very left edge.
-                AnimatedPositioned(
-                  duration: const Duration(milliseconds: 280),
-                  curve: Curves.easeOutCubic,
-                  top: activeIndex * itemH + _itemVerticalInset + 5,
-                  left: 0,
-                  height: itemH - _itemVerticalInset * 2 - 10,
-                  child: _SidebarAccentBar(preset: preset),
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    for (int i = 0; i < destinations.length; i++)
-                      SizedBox(
-                        height: itemH,
-                        child: _SidebarItem(
-                          destination: destinations[i],
-                          selected: i == activeIndex,
-                          onTap: () => onChange(i),
-                          compact: !full,
-                          horizontalPad: horizontalPad,
-                        ),
-                      ),
-                  ],
-                ),
+                for (int i = 0; i < destinations.length; i++)
+                  SizedBox(
+                    height: itemH,
+                    child: _SidebarItem(
+                      destination: destinations[i],
+                      selected: i == activeIndex,
+                      onTap: () => onChange(i),
+                      compact: !full,
+                      horizontalPad: horizontalPad,
+                    ),
+                  ),
               ],
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// Pill-shaped active background used by [_Sidebar]'s glider.
-class _SidebarGlider extends StatelessWidget {
-  const _SidebarGlider({required this.preset});
-
-  final AppThemePreset preset;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: <Color>[
-            preset.heroEnd.withValues(alpha: 0.22),
-            preset.heroEnd.withValues(alpha: 0.08),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(10),
-      ),
-    );
-  }
-}
-
-/// Thin gradient bar that sits on the left edge of the active row.
-class _SidebarAccentBar extends StatelessWidget {
-  const _SidebarAccentBar({required this.preset});
-
-  final AppThemePreset preset;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 3,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: <Color>[
-            preset.heroEnd,
-            preset.heroEnd.withValues(alpha: 0.55),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(3),
       ),
     );
   }
@@ -567,8 +470,6 @@ class _SidebarItemState extends State<_SidebarItem> {
     final AppTextStyles t = context.appText;
     final bool active = widget.selected;
 
-    // Active background lives on the parent's animated glider — here we
-    // only animate icon/label colors and (optionally) a hover tint.
     final Color iconColor = active
         ? preset.heroEnd
         : preset.textPrimary.withValues(alpha: 0.78);
@@ -625,13 +526,14 @@ class _SidebarItemState extends State<_SidebarItem> {
             if (!widget.selected) SoundService().tap();
             widget.onTap();
           },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
+          child: Container(
             padding: widget.compact
                 ? const EdgeInsets.symmetric(horizontal: 8)
                 : const EdgeInsets.symmetric(horizontal: 14),
             decoration: BoxDecoration(
-              color: (!active && _hovered)
+              color: active
+                  ? preset.heroEnd.withValues(alpha: 0.12)
+                  : _hovered
                   ? preset.surfaceMuted.withValues(alpha: 0.7)
                   : const Color(0x00000000),
               borderRadius: BorderRadius.circular(10),
